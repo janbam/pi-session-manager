@@ -42,11 +42,17 @@ pub async fn list_model_options_fast_internal() -> Result<Vec<types::ModelOption
     Ok(options)
 }
 
-/// List model options by running `pi --list-models`
-pub async fn list_model_options_full_internal() -> Result<Vec<types::ModelOption>, String> {
+/// List model options through Pi, optionally against the profile edited by PSM.
+pub async fn list_model_options_full_internal(use_config_profile: bool) -> Result<Vec<types::ModelOption>, String> {
     use types::sort_model_options;
 
-    let output = tokio::process::Command::new("pi").arg("--list-models").output().await.map_err(|e| format!("Failed to run pi --list-models: {e}"))?;
+    let mut command = tokio::process::Command::new("pi");
+    command.arg("--list-models");
+    // The config editor must compare against the same profile it saves.
+    if use_config_profile {
+        command.env("PI_CODING_AGENT_DIR", crate::paths::pi_agent_root_dir()?);
+    }
+    let output = command.output().await.map_err(|e| format!("Failed to run pi --list-models: {e}"))?;
 
     if !output.status.success() {
         return Err(format!("pi --list-models failed: {}", String::from_utf8_lossy(&output.stderr)));

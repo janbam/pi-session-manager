@@ -29,7 +29,7 @@ interface ProviderRemoteModelsModalProps {
   /** Available Pi model IDs, or null until the provider could be listed. */
   piGoModels: string[] | null;
   loadingPiGoModels: boolean;
-  refreshPiGoModels: () => Promise<void>;
+  refreshPiGoModels: () => Promise<string[] | null>;
   onClose: () => void;
   onConfirm: (models: ProviderRemoteModel[]) => void;
   /** Unchecked already-added models → parent confirms bulk delete. */
@@ -117,7 +117,8 @@ export function ProviderRemoteModelsModal({
     const key = model.id.toLowerCase();
     return canSelect && !existingIdSet.has(key) && !availableInPi(key);
   });
-  const selectedCount = selectedModelIds.size;
+  const selectedModels = models.filter((model) => selectedModelIds.has(model.id) && !availableInPi(model.id.toLowerCase()));
+  const selectedCount = selectedModels.length;
   const pendingRemoveCount = pendingRemoveIds.size;
   const existingVisibleIds = useMemo(
     () =>
@@ -204,7 +205,7 @@ export function ProviderRemoteModelsModal({
   }
 
   function handleConfirm() {
-    if (canSelect) onConfirm(models.filter((model) => selectedModelIds.has(model.id) && !availableInPi(model.id.toLowerCase())));
+    if (canSelect && selectedCount > 0) onConfirm(selectedModels);
   }
 
   if (!open) return null;

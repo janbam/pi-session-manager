@@ -120,11 +120,14 @@ export function useModelConfig() {
   const refreshPiGoModels = useCallback(async () => {
     setLoadingPiGoModels(true);
     try {
-      const available = await invoke<ModelOption[]>("list_model_options_full");
+      const available = await invoke<ModelOption[]>("list_model_options_full", { useConfigProfile: true });
       const ids = available.filter(({ provider }) => provider === "opencode-go").map(({ model }) => model);
-      setPiGoModels(ids.length ? ids : null);
+      const models = ids.length ? ids : null;
+      setPiGoModels(models);
+      return models;
     } catch {
       setPiGoModels(null);
+      return null;
     } finally {
       setLoadingPiGoModels(false);
     }
@@ -651,6 +654,7 @@ export function useModelConfig() {
       setConfigDetailTab("provider");
       return;
     }
+    if (showPiGoModels) void refreshPiGoModels();
     setShowRemoteModelsModal(true);
   }
 
@@ -670,11 +674,13 @@ export function useModelConfig() {
           .filter(Boolean),
       );
 
-      // The dialog excludes Go models already supplied by Pi to preserve their compatibility settings.
+      // Recheck at confirmation so a newly built-in model keeps Pi's compatibility settings.
       const goCatalog = selected.every((item) => item.modelConfig !== undefined);
       if (goCatalog && showPiGoModels) {
-        if (!piGoModels) return;
-        for (const id of piGoModels) existingIds.add(id.toLowerCase());
+        const current = await refreshPiGoModels();
+        if (!current) return;
+        for (const id of current) existingIds.add(id.toLowerCase());
+        if (selected.every(({ id }) => existingIds.has(id.toLowerCase()))) return;
       }
 
       // Go includes metadata in the list itself. Keep the existing enrichment for generic providers.
@@ -1072,6 +1078,7 @@ export function useModelConfig() {
         createBackup: true,
       });
       await loadAll({ showSpinner: false });
+      if (showPiGoModels) void refreshPiGoModels();
       pushFeedback(
         "success",
         t(

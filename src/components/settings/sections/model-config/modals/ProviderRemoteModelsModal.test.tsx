@@ -15,7 +15,7 @@ it("shows installed Go models as available in Pi and selects only catalog additi
     { id: "next-go-model", type: "chat" },
   ] }))));
   const onConfirm = vi.fn();
-  render(<ProviderRemoteModelsModal
+  const dialog = <ProviderRemoteModelsModal
     open
     providerName="opencode-go"
     providerEntry={{}}
@@ -26,7 +26,8 @@ it("shows installed Go models as available in Pi and selects only catalog additi
     onClose={vi.fn()}
     onConfirm={onConfirm}
     onRequestRemoveExisting={vi.fn()}
-  />);
+  />;
+  const { rerender } = render(dialog);
 
   const installed = await screen.findByRole<HTMLButtonElement>("button", { name: /deepseek-v4\.1-flash.*Available in Pi/ });
   const add = screen.getByRole<HTMLButtonElement>("button", { name: "Add selected models" });
@@ -37,4 +38,8 @@ it("shows installed Go models as available in Pi and selects only catalog additi
   fireEvent.click(add);
   expect(onConfirm).toHaveBeenCalledTimes(1);
   expect(onConfirm.mock.calls[0][0]).toEqual([expect.objectContaining({ id: "next-go-model" })]);
+
+  // If Pi gains the model while the dialog is open, it can no longer be queued for import.
+  rerender(<ProviderRemoteModelsModal {...dialog.props} piGoModels={["deepseek-v4.1-flash", "next-go-model"]} />);
+  expect(add.disabled).toBe(true);
 });
