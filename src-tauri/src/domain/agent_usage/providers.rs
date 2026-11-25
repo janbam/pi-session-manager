@@ -462,10 +462,17 @@ fn read_openrouter_key() -> Option<String> {
 async fn fetch_opencode_go(meta: &super::types::ProviderMeta) -> AgentUsageProvider {
     use crate::domain::opencode_go;
 
+    // Polling can reuse Pi's configured account, but must not execute a shell command from models.json.
+    let config = crate::domain::model_config::read_models_config_internal().ok();
+    let key = match opencode_go::pi_api_key(config.as_ref().and_then(|config| config.pointer("/providers/opencode-go/apiKey")).and_then(Value::as_str), |_| Err("OpenCode Go usage needs a stored API key or an environment variable to refresh automatically".to_string())) {
+        Ok(key) => key.or_else(opencode_go::standalone_api_key),
+        Err(message) => return unavailable(meta, message),
+    };
+
     // Go calculates shared allowance and reset times across models, plans, and clients.
     fetch_with_token(
         meta,
-        opencode_go::local_api_key(),
+        key,
         "A valid OpenCode Go subscription key is required",
         |token| HttpRequest { url: opencode_go::USAGE_URL.to_string(), method: "GET".to_string(), headers: vec![("Authorization".to_string(), format!("Bearer {token}")), ("Accept".to_string(), "application/json".to_string())], body: None },
         parse_opencode_go_rows,

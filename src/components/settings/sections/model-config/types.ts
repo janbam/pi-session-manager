@@ -46,6 +46,8 @@ export interface ModelEntry {
   api?: string;
   /** Per-model endpoint for providers that serve multiple protocols. */
   baseUrl?: string;
+  /** Pi API compatibility overrides carried by an imported model. */
+  compat?: Record<string, unknown>;
   reasoning?: boolean;
   thinkingLevelMap?: ThinkingLevelMap;
   input?: ModelInputType[];

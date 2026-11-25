@@ -70,7 +70,9 @@ pub async fn load_model_config_internal() -> Result<serde_json::Value, String> {
 }
 
 /// Save model config from JSON value
-pub async fn save_model_config_internal(content: serde_json::Value, create_backup: Option<bool>) -> Result<(), String> {
+pub async fn save_model_config_internal(mut content: serde_json::Value, create_backup: Option<bool>) -> Result<(), String> {
+    // Apply Go's inheritance rules to the edited draft before writing it to Pi.
+    super::opencode_go::prepare_config_for_save(&mut content);
     write_models_config_internal(content, create_backup.unwrap_or(true))
 }
 
@@ -122,4 +124,40 @@ pub async fn import_model_config_from_path_internal(path: String, mode: Option<S
 pub async fn list_model_config_versions_internal() -> Result<Vec<crate::commands::config_versions::ConfigVersionMeta>, String> {
     let file_path = get_models_json_path()?.to_string_lossy().to_string();
     crate::commands::config_versions::list_config_versions_internal(Some(file_path)).await
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{json, Value};
+
+    #[tokio::test]
+    async fn save_opencode_go_routes_and_inherit_blank_values_in_pi_models_json() {
+        let _lock = crate::paths::acquire_test_env_lock();
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::paths::TestHomeGuard::set(home.path());
+        let draft = json!({
+            "providers": {"opencode-go": {
+                "baseUrl": "https://opencode.ai/zen/go/v1",
+                "apiKey": " ",
+                "api": "",
+                "modelOverrides": {"qwen4-max": {"name": "Qwen"}},
+                "models": [
+                    {"id": "new-claude", "api": "anthropic-messages", "baseUrl": ""},
+                    {"id": "new-gemini", "api": "google-generative-ai", "baseUrl": "https://opencode.ai/zen/go"},
+                    {"id": "new-chat", "api": "openai-completions", "compat": {"maxTokensField": "max_tokens"}},
+                    {"id": "custom-proxy", "api": "openai-completions", "baseUrl": "https://proxy.example/v1"}
+                ]
+            }}
+        });
+        super::save_model_config_internal(draft, Some(false)).await.unwrap();
+        let saved = super::read_models_config_internal().unwrap();
+        let go = &saved["providers"]["opencode-go"];
+        for key in ["baseUrl", "apiKey", "api"] {
+            assert!(go.get(key).is_none(), "still saved {key}");
+        }
+        assert_eq!(go["modelOverrides"]["qwen4-max"]["name"], "Qwen");
+        let bases = go["models"].as_array().unwrap().iter().map(|model| model["baseUrl"].as_str().unwrap()).collect::<Vec<_>>();
+        assert_eq!(bases, ["https://opencode.ai/inference/go/anthropic", "https://opencode.ai/inference/go/google/v1beta", "https://opencode.ai/inference/go/openai/v1", "https://proxy.example/v1"]);
+        assert_eq!(go.pointer("/models/2/compat/maxTokensField").and_then(Value::as_str), Some("max_tokens"));
+    }
 }

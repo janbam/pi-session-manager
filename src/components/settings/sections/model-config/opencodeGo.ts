@@ -22,7 +22,7 @@ export interface GoModelMetadata {
   limit?: { context?: number; output?: number };
   cost?: {
     text?: {
-      input?: { price?: number; cache?: { read?: number; write?: number } };
+      input?: { price?: number; cache?: { read?: number; write?: number | { "5m"?: number; "30m"?: number; "1h"?: number; "12h"?: number } } };
       output?: { price?: number };
     };
   };
@@ -64,12 +64,15 @@ export function buildOpenCodeGoModel(
       }))
     : undefined;
   const cost = metadata.cost?.text;
+  const cacheWrite = cost?.input?.cache?.write;
   return {
     id,
     name: name || id,
     api: selected.api,
     // Pi's Anthropic SDK adds its own /v1 segment.
     baseUrl: selected.protocol === "messages" ? baseUrl.slice(0, -3) : baseUrl,
+    // Go's Chat Completions adapter uses max_tokens and has no store option.
+    ...(selected.protocol === "chat-completions" ? { compat: { maxTokensField: "max_tokens", supportsStore: false } } : {}),
     reasoning: reasoning?.supported === true,
     thinkingLevelMap,
     input: metadata.modalities?.input?.some((type) => type.startsWith("image/")) ? ["text", "image"] : ["text"],
@@ -79,7 +82,10 @@ export function buildOpenCodeGoModel(
       input: clampCostValue(cost?.input?.price),
       output: clampCostValue(cost?.output?.price),
       cacheRead: clampCostValue(cost?.input?.cache?.read),
-      cacheWrite: clampCostValue(cost?.input?.cache?.write),
+      // Pi's model cost has one write rate. Prefer the shortest published retention.
+      cacheWrite: clampCostValue(typeof cacheWrite === "object" && cacheWrite
+        ? cacheWrite["5m"] ?? cacheWrite["30m"] ?? cacheWrite["1h"] ?? cacheWrite["12h"]
+        : cacheWrite),
     },
   };
 }

@@ -62,7 +62,7 @@ describe("fetchProviderRemoteModels", () => {
         modalities: { input: ["text", "image/png"] },
         capabilities: { reasoning: { supported: true, effort: ["low", "max"] } },
         limit: { context: 1000000, output: 131072 },
-        cost: { text: { input: { price: 0.3, cache: { read: 0.03 } }, output: { price: 1.2 } } },
+        cost: { text: { input: { price: 0.3, cache: { read: 0.03, write: { "5m": 1.875, "1h": 3 } } }, output: { price: 1.2 } } },
       },
       {
         id: "gemini-4-argon",
@@ -104,9 +104,14 @@ describe("fetchProviderRemoteModels", () => {
         input: ["text", "image"],
         contextWindow: 1000000,
         maxTokens: 131072,
-        cost: { input: 0.3, output: 1.2, cacheRead: 0.03, cacheWrite: 0 },
+        cost: { input: 0.3, output: 1.2, cacheRead: 0.03, cacheWrite: 1.875 },
       },
-      { api: "openai-completions", baseUrl: "https://opencode.ai/inference/go/openai/v1" },
+      { api: "openai-completions", baseUrl: "https://opencode.ai/inference/go/openai/v1", compat: { maxTokensField: "max_tokens", supportsStore: false } },
     ]);
+  });
+
+  it("blocks importing Go models under Pi's Zen credential identity", async () => {
+    await expect(fetchProviderRemoteModels("opencode", { baseUrl: "https://opencode.ai/zen/go/v1" })).rejects.toThrow(/opencode-go/);
+    expect(fetch).not.toHaveBeenCalled();
   });
 });

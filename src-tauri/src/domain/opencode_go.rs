@@ -1,6 +1,6 @@
 //! Shared OpenCode Go service routes and local credential discovery.
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::path::PathBuf;
 
 /// OpenCode Go's account usage meters, scoped to the bearer key.
@@ -24,23 +24,107 @@ pub(super) fn inference_base(api: &str) -> Option<&'static str> {
     }
 }
 
-/// Find a Go key, giving explicit Go credentials priority over the shared OpenCode environment key.
-pub(super) fn local_api_key() -> Option<String> {
-    let env_key = |name: &str| std::env::var(name).ok().map(|key| key.trim().to_string()).filter(|key| !key.is_empty());
-    if let Some(key) = env_key("OPENCODE_GO_API_KEY") {
-        return Some(key);
+/// Return the Pi SDK base for a Go protocol. Its Anthropic adapter adds /v1 itself.
+fn pi_base(api: &str) -> Option<&'static str> {
+    let base = inference_base(api)?;
+    if api == "anthropic-messages" {
+        base.strip_suffix("/v1")
+    } else {
+        Some(base)
     }
+}
 
-    // Use the Go provider entry in each credential store, since other OpenCode entries may use another account.
-    let pi_auth = crate::paths::pi_agent_root_dir().ok().map(|dir| dir.join("auth.json"));
-    let opencode_auth = std::env::var_os("XDG_DATA_HOME").filter(|dir| !dir.is_empty()).map(PathBuf::from).or_else(|| dirs::home_dir().map(|home| home.join(".local/share"))).map(|dir| dir.join("opencode/auth.json"));
-    for path in [pi_auth, opencode_auth].into_iter().flatten() {
-        let Some(auth) = std::fs::read(path).ok().and_then(|data| serde_json::from_slice::<Value>(&data).ok()) else {
-            continue;
-        };
-        if let Some(key) = auth.pointer("/opencode-go/key").and_then(Value::as_str).map(str::trim).filter(|key| !key.is_empty()) {
-            return Some(key.to_string());
+/// Read a nonblank Go configuration field without consuming the rest of the object.
+fn field<'a>(entry: &'a Map<String, Value>, name: &str) -> Option<&'a str> {
+    entry.get(name)?.as_str().map(str::trim).filter(|value| !value.is_empty())
+}
+
+/// Remove empty overrides and restore native routing for Pi's built-in Go models.
+pub(super) fn prepare_config_for_save(config: &mut Value) {
+    let Some(provider) = config.pointer_mut("/providers/opencode-go").and_then(Value::as_object_mut) else {
+        return;
+    };
+
+    // A provider-wide Go URL replaces the native URL of every built-in model in Pi.
+    let global_go_url = field(provider, "baseUrl").is_some_and(is_go_url) && !provider.contains_key("oauth");
+    for key in ["apiKey", "api", "baseUrl"] {
+        if provider.get(key).and_then(Value::as_str).is_some_and(|value| value.trim().is_empty()) {
+            provider.remove(key);
         }
     }
-    env_key("OPENCODE_API_KEY")
+    if global_go_url {
+        provider.remove("baseUrl");
+    }
+    let provider_api = field(provider, "api").map(str::to_owned);
+    let Some(models) = provider.get_mut("models").and_then(Value::as_array_mut) else {
+        return;
+    };
+
+    // Carry a removed Go base into explicitly configured chat models according to their protocol.
+    for model in models.iter_mut().filter_map(Value::as_object_mut) {
+        for key in ["api", "baseUrl"] {
+            if model.get(key).and_then(Value::as_str).is_some_and(|value| value.trim().is_empty()) {
+                model.remove(key);
+            }
+        }
+        let needs_route = field(model, "baseUrl").map(is_go_url).unwrap_or(global_go_url);
+        if needs_route {
+            if let Some(base) = field(model, "api").or(provider_api.as_deref()).and_then(pi_base) {
+                model.insert("baseUrl".to_string(), Value::String(base.to_string()));
+            }
+        }
+    }
+}
+
+/// Resolve the saved Pi base to its wire form, rejecting stale routes before sending a probe.
+pub(super) fn verify_probe_base(configured_base: Option<&str>, api: &str) -> Result<&'static str, String> {
+    let wire = inference_base(api).ok_or_else(|| format!("Unsupported OpenCode Go API for HTTP test: {api}"))?;
+    let saved = configured_base.map(|base| base.trim_end_matches('/'));
+    if saved.is_some() && saved != pi_base(api) {
+        return Err(format!("The saved OpenCode Go Base URL does not match {api}. Save the OpenCode Go provider again to update its routes. The expected Pi Base URL is {}.", pi_base(api).unwrap_or(wire)));
+    }
+    Ok(wire)
+}
+
+/// Read one provider's stored API key without falling back to a different provider identity.
+fn stored_key(path: PathBuf) -> Option<String> {
+    let data = std::fs::read(path).ok()?;
+    let auth: Value = serde_json::from_slice(&data).ok()?;
+    auth.pointer("/opencode-go/key")?.as_str().map(str::trim).filter(|key| !key.is_empty()).map(str::to_string)
+}
+
+/// Resolve Pi's Go account in the same order as Pi.
+pub(super) fn pi_api_key(configured: Option<&str>, resolve_command: impl FnOnce(&str) -> Result<String, String>) -> Result<Option<String>, String> {
+    let pi_auth = std::env::var_os("PI_CODING_AGENT_DIR").filter(|dir| !dir.is_empty()).map(PathBuf::from).or_else(|| crate::paths::pi_agent_root_dir().ok()).map(|dir| dir.join("auth.json"));
+    if let Some(key) = pi_auth.and_then(stored_key) {
+        return resolve_key(&key, resolve_command).map(Some);
+    }
+    if let Some(key) = configured.map(str::trim).filter(|key| !key.is_empty()) {
+        return resolve_key(key, resolve_command).map(Some);
+    }
+
+    Ok(env_key("OPENCODE_API_KEY"))
+}
+
+/// Let the usage dashboard also serve Go users who connected only in OpenCode.
+pub(super) fn standalone_api_key() -> Option<String> {
+    let opencode_auth = std::env::var_os("XDG_DATA_HOME").filter(|dir| !dir.is_empty()).map(PathBuf::from).or_else(|| dirs::home_dir().map(|home| home.join(".local/share"))).map(|dir| dir.join("opencode/auth.json"));
+    env_key("OPENCODE_GO_API_KEY").or_else(|| opencode_auth.and_then(stored_key))
+}
+
+/// Read a nonempty API key from the process environment.
+fn env_key(name: &str) -> Option<String> {
+    std::env::var(name).ok().map(|key| key.trim().to_string()).filter(|key| !key.is_empty())
+}
+
+/// Resolve a literal key or a standalone environment reference without exposing it in errors.
+pub(super) fn resolve_key(raw: &str, resolve_command: impl FnOnce(&str) -> Result<String, String>) -> Result<String, String> {
+    if raw.starts_with('!') {
+        return resolve_command(raw);
+    }
+    if let Some(reference) = raw.strip_prefix('$') {
+        let name = reference.strip_prefix('{').and_then(|name| name.strip_suffix('}')).unwrap_or(reference);
+        return env_key(name).ok_or_else(|| "OpenCode Go API key environment variable is missing or empty".to_string());
+    }
+    Ok(raw.to_string())
 }

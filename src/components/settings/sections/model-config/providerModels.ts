@@ -118,6 +118,10 @@ export async function fetchProviderRemoteModels(
   options: { timeoutMs?: number } = {},
 ): Promise<ProviderRemoteModelsResult> {
   const openCodeGo = usesOpenCodeGoCatalog(providerName, provider.baseUrl);
+  // Pi assigns Go and Zen different built-ins and credential identities.
+  if (openCodeGo && providerName === "opencode") {
+    throw new Error("Import OpenCode Go models into the opencode-go provider");
+  }
   const api = provider.api?.trim() || "openai-completions";
   if (!openCodeGo && api === "google-generative-ai") {
     throw new Error(

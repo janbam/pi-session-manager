@@ -14,7 +14,8 @@ export function asModelConfigShape(raw: unknown): ModelConfigShape {
     obj.providers && typeof obj.providers === "object"
       ? (obj.providers as Record<string, ProviderEntry>)
       : {};
-  return { providers };
+  // The editable provider map can coexist with settings written directly by Pi.
+  return { ...obj, providers };
 }
 
 export function asErrorMessage(error: unknown): string {
@@ -100,6 +101,7 @@ export function normalizeConfig(config: ModelConfigShape): ModelConfigShape {
           name: model.name ?? "",
           api: inheritGoDefaults ? model.api?.trim() || undefined : model.api ?? "",
           baseUrl: model.baseUrl,
+          compat: model.compat,
           reasoning: model.reasoning === true,
           ...(thinkingLevelMap ? { thinkingLevelMap } : {}),
           input: normalizeModelInputTypes(model.input),
