@@ -39,6 +39,11 @@ fn field<'a>(entry: &'a Map<String, Value>, name: &str) -> Option<&'a str> {
     entry.get(name)?.as_str().map(str::trim).filter(|value| !value.is_empty())
 }
 
+/// All routes must be Go before a provider-wide credential can be sent to Go directly.
+pub(super) fn can_reuse_credentials(provider: &Map<String, Value>) -> bool {
+    std::iter::once(provider).chain(provider.get("models").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_object)).filter_map(|entry| field(entry, "baseUrl")).all(is_go_url)
+}
+
 /// Remove empty overrides and restore native routing for Pi's built-in Go models.
 pub(super) fn prepare_config_for_save(config: &mut Value) {
     let Some(provider) = config.pointer_mut("/providers/opencode-go").and_then(Value::as_object_mut) else {
@@ -95,7 +100,8 @@ fn stored_key(path: PathBuf) -> Option<String> {
 
 /// Resolve Pi's Go account in the same order as Pi.
 pub(super) fn pi_api_key(configured: Option<&str>, resolve_command: impl FnOnce(&str) -> Result<String, String>) -> Result<Option<String>, String> {
-    let pi_auth = std::env::var_os("PI_CODING_AGENT_DIR").filter(|dir| !dir.is_empty()).map(PathBuf::from).or_else(|| crate::paths::pi_agent_root_dir().ok()).map(|dir| dir.join("auth.json"));
+    // Read the credential next to the same models.json PSM loaded.
+    let pi_auth = crate::paths::pi_agent_models_path().ok().map(|path| path.with_file_name("auth.json"));
     if let Some(key) = pi_auth.and_then(stored_key) {
         return resolve_key(&key, resolve_command).map(Some);
     }
@@ -127,4 +133,19 @@ pub(super) fn resolve_key(raw: &str, resolve_command: impl FnOnce(&str) -> Resul
         return env_key(name).ok_or_else(|| "OpenCode Go API key environment variable is missing or empty".to_string());
     }
     Ok(raw.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::can_reuse_credentials;
+    use serde_json::json;
+
+    #[test]
+    fn opencode_go_credentials_are_isolated_from_proxy_routes() {
+        for provider in [json!({"baseUrl": "https://proxy.example/v1"}), json!({"models": [{"id": "proxy-model", "baseUrl": "https://proxy.example/v1"}]})] {
+            assert!(!can_reuse_credentials(provider.as_object().unwrap()));
+        }
+        let native = json!({"baseUrl": "https://opencode.ai/zen/go/v1", "models": [{"id": "go-model", "baseUrl": "https://opencode.ai/inference/go/anthropic"}]});
+        assert!(can_reuse_credentials(native.as_object().unwrap()));
+    }
 }

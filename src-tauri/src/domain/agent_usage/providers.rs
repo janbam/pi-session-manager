@@ -464,9 +464,15 @@ async fn fetch_opencode_go(meta: &super::types::ProviderMeta) -> AgentUsageProvi
 
     // Polling can reuse Pi's configured account, but must not execute a shell command from models.json.
     let config = crate::domain::model_config::read_models_config_internal().ok();
-    let key = match opencode_go::pi_api_key(config.as_ref().and_then(|config| config.pointer("/providers/opencode-go/apiKey")).and_then(Value::as_str), |_| Err("OpenCode Go usage needs a stored API key or an environment variable to refresh automatically".to_string())) {
-        Ok(key) => key.or_else(opencode_go::standalone_api_key),
-        Err(message) => return unavailable(meta, message),
+    let provider = config.as_ref().and_then(|config| config.pointer("/providers/opencode-go")).and_then(Value::as_object);
+    let key = if provider.is_some_and(|provider| !opencode_go::can_reuse_credentials(provider)) {
+        // A proxy may accept an unrelated token. Only use an independent Go credential here.
+        opencode_go::standalone_api_key()
+    } else {
+        match opencode_go::pi_api_key(provider.and_then(|provider| provider.get("apiKey")).and_then(Value::as_str), |_| Err("OpenCode Go usage needs a stored API key or an environment variable to refresh automatically".to_string())) {
+            Ok(key) => key.or_else(opencode_go::standalone_api_key),
+            Err(message) => return unavailable(meta, message),
+        }
     };
 
     // Go calculates shared allowance and reset times across models, plans, and clients.

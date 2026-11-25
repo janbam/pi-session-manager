@@ -254,7 +254,14 @@ pub async fn test_model_http_internal(provider: String, model: String, prompt: O
     if is_go && provider == "opencode" {
         return Err("Use the opencode-go provider to test an OpenCode Go model".to_string());
     }
-    let api = entries.into_iter().flatten().filter_map(|entry| entry.get("api").and_then(Value::as_str)).map(str::trim).find(|api| !api.is_empty()).unwrap_or("openai-completions").to_string();
+    if is_go && !opencode_go::can_reuse_credentials(provider_obj) {
+        return Err("Configure the proxy and native OpenCode Go models under separate providers before testing".to_string());
+    }
+    let configured_api = entries.into_iter().flatten().filter_map(|entry| entry.get("api").and_then(Value::as_str)).map(str::trim).find(|api| !api.is_empty());
+    if is_go && configured_api.is_none() {
+        return Err("Set the API protocol for this OpenCode Go model in models.json, or import it from the Go catalog before testing".to_string());
+    }
+    let api = configured_api.unwrap_or("openai-completions").to_string();
     let base_url = if is_go { opencode_go::verify_probe_base(configured_base, &api)? } else { configured_base.ok_or_else(|| format!("Provider `{provider}` is missing baseUrl"))? };
 
     let api_key_raw = provider_obj.get("apiKey").and_then(Value::as_str).map(str::trim).unwrap_or("");
