@@ -44,6 +44,8 @@ export interface ModelEntry {
   id: string;
   name?: string;
   api?: string;
+  /** Per-model endpoint for providers that serve multiple protocols. */
+  baseUrl?: string;
   reasoning?: boolean;
   thinkingLevelMap?: ThinkingLevelMap;
   input?: ModelInputType[];

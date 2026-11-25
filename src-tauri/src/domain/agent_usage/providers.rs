@@ -460,43 +460,17 @@ fn read_openrouter_key() -> Option<String> {
 }
 
 async fn fetch_opencode_go(meta: &super::types::ProviderMeta) -> AgentUsageProvider {
-    if read_opencode_go_token().is_none() {
-        return unavailable(meta, "Sign in to OpenCode Go");
-    }
-    let home = match home_dir() {
-        Some(home) => home,
-        None => return unavailable(meta, "No usage data"),
-    };
-    let db_path = home.join(".local/share/opencode/opencode.db");
-    let sql = "SELECT CAST(COALESCE(json_extract(data, '$.time.created'), time_created) AS INTEGER) AS createdMs, CAST(json_extract(data, '$.cost') AS REAL) AS cost FROM message WHERE json_valid(data) AND json_extract(data, '$.providerID') = 'opencode-go' AND json_extract(data, '$.role') = 'assistant' AND json_type(data, '$.cost') IN ('integer', 'real')";
-    let Some(rows) = read_sqlite_query(&db_path, sql) else {
-        return unavailable(meta, "No usage data");
-    };
-    let mut points = Vec::new();
-    for row in rows {
-        if row.len() < 2 {
-            continue;
-        }
-        let created = row[0].parse::<i64>().unwrap_or(0);
-        let cost = row[1].parse::<f64>().unwrap_or(-1.0);
-        if created > 0 && cost >= 0.0 {
-            points.push((created, cost));
-        }
-    }
-    if points.is_empty() {
-        return unavailable(meta, "No usage data");
-    }
-    let metrics = parse_opencode_go_rows(&points, chrono::Utc::now().timestamp_millis());
-    available_snapshot(meta, Some("Go".to_string()), metrics)
-}
+    use crate::domain::opencode_go;
 
-fn read_opencode_go_token() -> Option<String> {
-    if let Some(token) = env_var("OPENCODE_GO_API_KEY") {
-        return Some(token);
-    }
-    let home = home_dir()?;
-    let auth = read_json(home.join(".local/share/opencode/auth.json"))?;
-    json_string(&auth, &["opencode-go", "key"])
+    // Go calculates shared allowance and reset times across models, plans, and clients.
+    fetch_with_token(
+        meta,
+        opencode_go::local_api_key(),
+        "A valid OpenCode Go subscription key is required",
+        |token| HttpRequest { url: opencode_go::USAGE_URL.to_string(), method: "GET".to_string(), headers: vec![("Authorization".to_string(), format!("Bearer {token}")), ("Accept".to_string(), "application/json".to_string())], body: None },
+        parse_opencode_go_rows,
+    )
+    .await
 }
 
 async fn fetch_kimi(meta: &super::types::ProviderMeta) -> AgentUsageProvider {

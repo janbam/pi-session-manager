@@ -1,6 +1,7 @@
 //! Model HTTP testing logic
 use crate::domain::model_config::reader::{get_models_json_path, read_models_config_internal};
 use crate::domain::model_config::types::ModelHttpTestResult;
+use crate::domain::opencode_go;
 use crate::utils::string::{join_url, shell_escape_single_quotes};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_TYPE};
 use serde_json::{Map, Value};
@@ -168,6 +169,19 @@ fn build_anthropic_messages_attempts(base_url: &str, model: &str, prompt_text: &
     ]
 }
 
+/// Build the Go Gemini probe using the model ID in the GenerateContent path.
+fn build_go_gemini_attempt(base_url: &str, model: &str, prompt_text: &str) -> HttpTestAttempt {
+    HttpTestAttempt {
+        request_style: "gemini:generate-content",
+        url: join_url(base_url, &format!("models/{}:generateContent", urlencoding::encode(model))),
+        body_value: serde_json::json!({
+            "contents": [{"role": "user", "parts": [{"text": prompt_text}]}],
+            "generationConfig": {"maxOutputTokens": 256},
+        }),
+        extra_headers: Vec::new(),
+    }
+}
+
 pub fn extract_response_preview(api: &str, response_text: &str) -> Option<String> {
     let parsed: Value = serde_json::from_str(response_text).ok()?;
     match api {
@@ -181,6 +195,7 @@ pub fn extract_response_preview(api: &str, response_text: &str) -> Option<String
                 .and_then(|items| items.iter().find_map(|item| item.get("content").and_then(|v| v.as_array()).and_then(|content| content.iter().find_map(|part| part.get("text").and_then(|v| v.as_str()).map(str::trim).filter(|value| !value.is_empty()).map(str::to_string)))))
         }),
         "anthropic-messages" => parsed.get("content").and_then(|v| v.as_array()).and_then(|items| items.iter().find_map(|item| item.get("text").and_then(|v| v.as_str()).map(str::trim).filter(|value| !value.is_empty()).map(str::to_string))),
+        "google-generative-ai" => parsed.pointer("/candidates/0/content/parts")?.as_array()?.iter().filter(|part| part.get("thought").and_then(Value::as_bool) != Some(true)).find_map(|part| part.get("text").and_then(Value::as_str).map(str::trim).filter(|text| !text.is_empty()).map(str::to_string)),
         _ => None,
     }
 }
@@ -230,12 +245,21 @@ pub async fn test_model_http_internal(provider: String, model: String, prompt: O
     let config = read_models_config_internal()?;
     let (provider_obj, model_obj) = extract_provider_and_model(&config, &provider, &model)?;
 
-    let base_url = provider_obj.get("baseUrl").and_then(|v| v.as_str()).ok_or_else(|| format!("Provider `{provider}` is missing baseUrl"))?.to_string();
+    // Prefer model-level routes and normalize Go aliases to the current wire protocol base.
+    let entries = [model_obj, Some(provider_obj)];
+    let configured_base = entries.into_iter().flatten().filter_map(|entry| entry.get("baseUrl").and_then(Value::as_str)).map(str::trim).find(|base| !base.is_empty());
+    let is_go = configured_base.map(opencode_go::is_go_url).unwrap_or(provider == "opencode-go");
+    let api = entries.into_iter().flatten().filter_map(|entry| entry.get("api").and_then(Value::as_str)).map(str::trim).find(|api| !api.is_empty()).unwrap_or("openai-completions").to_string();
+    let base_url = if is_go { opencode_go::inference_base(&api).ok_or_else(|| format!("Unsupported OpenCode Go API for HTTP test: {api}"))? } else { configured_base.ok_or_else(|| format!("Provider `{provider}` is missing baseUrl"))? };
 
-    let api = model_obj.and_then(|obj| obj.get("api").and_then(|v| v.as_str())).or_else(|| provider_obj.get("api").and_then(|v| v.as_str())).unwrap_or("openai-completions").to_string();
-
-    let api_key_raw = provider_obj.get("apiKey").and_then(|v| v.as_str()).unwrap_or("");
-    let resolved_api_key = if api_key_raw.is_empty() { String::new() } else { resolve_dynamic_value(api_key_raw)? };
+    let api_key_raw = provider_obj.get("apiKey").and_then(Value::as_str).map(str::trim).unwrap_or("");
+    let resolved_api_key = if !api_key_raw.is_empty() {
+        resolve_dynamic_value(if is_go { api_key_raw.strip_prefix('$').unwrap_or(api_key_raw) } else { api_key_raw })?
+    } else if is_go {
+        opencode_go::local_api_key().unwrap_or_default()
+    } else {
+        String::new()
+    };
 
     let auth_header = provider_obj.get("authHeader").and_then(|v| v.as_bool()).unwrap_or(false);
 
@@ -244,23 +268,33 @@ pub async fn test_model_http_internal(provider: String, model: String, prompt: O
     let mut base_headers = parse_headers_json(provider_headers, model_headers)?;
     base_headers.entry(CONTENT_TYPE).or_insert_with(|| HeaderValue::from_static("application/json"));
 
-    if auth_header && !resolved_api_key.is_empty() {
+    if (auth_header || is_go) && !resolved_api_key.is_empty() {
         let bearer = format!("Bearer {resolved_api_key}");
         let value = HeaderValue::from_str(&bearer).map_err(|e| format!("Invalid authorization header value: {e}"))?;
         base_headers.insert(HeaderName::from_static("authorization"), value);
     }
 
-    if api == "anthropic-messages" && !resolved_api_key.is_empty() {
+    if api == "anthropic-messages" && !is_go && !resolved_api_key.is_empty() {
         let key_value = HeaderValue::from_str(&resolved_api_key).map_err(|e| format!("Invalid x-api-key header value: {e}"))?;
         base_headers.entry(HeaderName::from_static("x-api-key")).or_insert(key_value);
+    }
+
+    // Identify PSM and keep a single conversation identifier across attempts in this test.
+    if is_go {
+        let mut session_id = [0u8; 16];
+        getrandom::getrandom(&mut session_id).map_err(|e| format!("Create OpenCode Go test session: {e}"))?;
+        let session = format!("psm-{:032x}", u128::from_be_bytes(session_id));
+        base_headers.insert(reqwest::header::USER_AGENT, HeaderValue::from_static(concat!("pi-session-manager/", env!("CARGO_PKG_VERSION"))));
+        base_headers.insert(HeaderName::from_static("x-opencode-session"), HeaderValue::from_str(&session).map_err(|e| e.to_string())?);
     }
 
     let prompt_text = prompt.unwrap_or_else(|| "Reply with a concise health-check response that includes the word ok.".to_string());
 
     let attempts = match api.as_str() {
-        "openai-completions" => build_openai_chat_attempts(&base_url, &model, &prompt_text),
-        "openai-responses" => build_openai_responses_attempts(&base_url, &model, &prompt_text),
-        "anthropic-messages" => build_anthropic_messages_attempts(&base_url, &model, &prompt_text),
+        "openai-completions" => build_openai_chat_attempts(base_url, &model, &prompt_text),
+        "openai-responses" => build_openai_responses_attempts(base_url, &model, &prompt_text),
+        "anthropic-messages" => build_anthropic_messages_attempts(base_url, &model, &prompt_text),
+        "google-generative-ai" if is_go => vec![build_go_gemini_attempt(base_url, &model, &prompt_text)],
         "google-generative-ai" => return Err("google-generative-ai testing is not supported yet in model HTTP tester".to_string()),
         other => return Err(format!("Unsupported api type for HTTP test: {other}")),
     };

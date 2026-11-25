@@ -42,6 +42,8 @@ import {
   mergeModelCost,
   type CatalogModelOption,
 } from "./catalog";
+import { usesOpenCodeGoCatalog } from "./opencodeGo";
+import type { ProviderRemoteModel } from "./providerModels";
 
 export function useModelConfig() {
   const { t } = useTranslation();
@@ -443,7 +445,8 @@ export function useModelConfig() {
       return;
     }
 
-    const nextProvider = createDefaultProvider();
+    // Pi already owns the Go provider's auth and per-model routes.
+    const nextProvider: ProviderEntry = name === "opencode-go" ? { models: [] } : createDefaultProvider();
     setConfig((prev) => ({
       ...prev,
       providers: {
@@ -615,7 +618,7 @@ export function useModelConfig() {
       );
       return;
     }
-    if (!selectedProviderEntry?.baseUrl?.trim()) {
+    if (!selectedProviderEntry?.baseUrl?.trim() && !usesOpenCodeGoCatalog(selectedProvider)) {
       pushFeedback(
         "warning",
         t(
@@ -630,7 +633,7 @@ export function useModelConfig() {
   }
 
   async function addModelsFromRemote(
-    selected: Array<{ id: string; name?: string | null }>,
+    selected: ProviderRemoteModel[],
   ) {
     if (!selectedProvider || selected.length === 0) {
       setShowRemoteModelsModal(false);
@@ -639,20 +642,28 @@ export function useModelConfig() {
 
     setBusy("remote-models-add");
     try {
-      let catalog = null as Awaited<
-        ReturnType<typeof fetchModelsDevCatalog>
-      > | null;
-      try {
-        catalog = await fetchModelsDevCatalog();
-      } catch (error) {
-        console.warn("models.dev enrich skipped:", error);
-      }
-
       const existingIds = new Set(
         selectedProviderModels
           .map((model) => model.id.trim().toLowerCase())
           .filter(Boolean),
       );
+
+      // A custom entry with a built-in Pi ID would replace its protocol compatibility settings.
+      const goCatalog = selected.every((item) => item.modelConfig !== undefined);
+      if (goCatalog && selectedProvider === "opencode-go") {
+        const piModels = await invoke<Array<{ provider: string; model: string }>>("list_model_options_full");
+        const goModels = piModels.filter(({ provider }) => provider === "opencode-go");
+        if (goModels.length === 0) {
+          throw new Error(t("settings.modelConfigCenter.feedback.openCodeGoNeedsPi", "Connect OpenCode Go in Pi before importing models so PSM can identify Pi's built-in models."));
+        }
+        for (const { model } of goModels) existingIds.add(model.toLowerCase());
+      }
+
+      // Go includes metadata in the list itself. Keep the existing enrichment for generic providers.
+      const catalog = goCatalog ? null : await fetchModelsDevCatalog().catch((error) => {
+        console.warn("models.dev enrich skipped:", error);
+        return null;
+      });
 
       const nextModels = [...selectedProviderModels];
       let added = 0;
@@ -671,7 +682,10 @@ export function useModelConfig() {
           continue;
         }
 
-        if (catalog) {
+        if (item.modelConfig) {
+          nextModels.push(item.modelConfig);
+          enriched += 1;
+        } else if (catalog) {
           const built = buildModelEntryFromRemote(
             item,
             catalog,
@@ -710,6 +724,8 @@ export function useModelConfig() {
           { added, skipped, enriched },
         ),
       );
+    } catch (error) {
+      pushFeedback("error", asErrorMessage(error));
     } finally {
       setBusy(null);
     }

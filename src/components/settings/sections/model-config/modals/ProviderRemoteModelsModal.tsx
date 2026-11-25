@@ -11,6 +11,7 @@ import {
 import { ModelIcon } from "@/components/session-viewer/ModelIcon";
 import { ModalShell } from "../ui/ModalShell";
 import type { ProviderEntry } from "../types";
+import { usesOpenCodeGoCatalog } from "../opencodeGo";
 import {
   fetchProviderRemoteModels,
   type ProviderRemoteModel,
@@ -110,7 +111,7 @@ export function ProviderRemoteModelsModal({
   );
 
   async function loadRemoteModels() {
-    if (!providerEntry?.baseUrl?.trim()) {
+    if (!providerEntry || (!providerEntry.baseUrl?.trim() && !usesOpenCodeGoCatalog(providerName))) {
       setError(
         t(
           "settings.modelConfigCenter.feedback.remoteModelsNeedBaseUrl",
@@ -420,6 +421,16 @@ export function ProviderRemoteModelsModal({
                       <div className="mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5 font-mono text-[10px] text-muted-foreground">
                         {model.name ? <span>{model.name}</span> : null}
                         {model.ownedBy ? <span>{model.ownedBy}</span> : null}
+                        {model.modelConfig && (
+                          <>
+                            <span>{model.modelConfig.api}</span>
+                            {model.modelConfig.contextWindow !== undefined && (
+                              <span>
+                                {t("settings.modelConfigCenter.fields.contextWindow", "Context Window")} {model.modelConfig.contextWindow.toLocaleString()}
+                              </span>
+                            )}
+                          </>
+                        )}
                       </div>
                     </div>
                   </button>

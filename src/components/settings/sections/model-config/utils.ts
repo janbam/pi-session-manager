@@ -83,10 +83,12 @@ export function normalizeConfig(config: ModelConfigShape): ModelConfigShape {
     a.localeCompare(b),
   )) {
     const provider = config.providers[providerName] ?? {};
+    const inheritGoDefaults = providerName === "opencode-go";
     providers[providerName] = {
-      baseUrl: provider.baseUrl ?? "",
-      api: provider.api ?? "openai-completions",
-      apiKey: provider.apiKey ?? "",
+      // Blank fields must let Pi inherit the built-in Go provider's routes and credentials.
+      baseUrl: inheritGoDefaults ? provider.baseUrl?.trim() || undefined : provider.baseUrl ?? "",
+      api: inheritGoDefaults ? provider.api?.trim() || undefined : provider.api ?? "openai-completions",
+      apiKey: inheritGoDefaults ? provider.apiKey?.trim() || undefined : provider.apiKey ?? "",
       authHeader: provider.authHeader === true,
       headers: normalizeHeaders(provider.headers),
       models: (provider.models ?? []).map((model) => {
@@ -96,7 +98,8 @@ export function normalizeConfig(config: ModelConfigShape): ModelConfigShape {
         return {
           id: model.id ?? "",
           name: model.name ?? "",
-          api: model.api ?? "",
+          api: inheritGoDefaults ? model.api?.trim() || undefined : model.api ?? "",
+          baseUrl: model.baseUrl,
           reasoning: model.reasoning === true,
           ...(thinkingLevelMap ? { thinkingLevelMap } : {}),
           input: normalizeModelInputTypes(model.input),
