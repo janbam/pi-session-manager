@@ -477,6 +477,7 @@ function createPsmStreamFn(transport: PsmTransport, modelRef: PsmAgentModelRef):
     }
     options?.signal?.addEventListener('abort', abortListener, { once: true })
 
+    // Resend history and tools each turn. OpenCode Go uses the stable agent session ID to route those turns together.
     const payload = {
       protocol: 'pi-agent',
       systemPrompt: context.systemPrompt ?? '',
@@ -484,6 +485,7 @@ function createPsmStreamFn(transport: PsmTransport, modelRef: PsmAgentModelRef):
       provider: modelRef.provider,
       model: modelRef.id,
       reasoning: options?.reasoning,
+      sessionId: options?.sessionId,
       messages: context.messages,
       tools: context.tools,
     }
@@ -517,10 +519,17 @@ function createPsmStreamFn(transport: PsmTransport, modelRef: PsmAgentModelRef):
       return stream
     }
 
-    void transport.invoke<PsmAiTextResponse>('invoke_model_text', payload).then((response) => {
+    // Without a stream channel (web), run one nonstreaming turn and replay its terminal Pi message,
+    // tool calls and provider errors included, so the upstream Agent keeps owning the tool loop.
+    void transport.invoke<AssistantMessage>('invoke_model_agent', payload).then((message) => {
       if (complete) return
-      pushLegacyStreamEvent(stream, modelRef, { type: 'done', response }, legacyState)
+      if (message.stopReason === 'pending') throw new Error('PSM agent model returned an unfinished pending response')
       finish()
+      if (message.stopReason === 'error' || message.stopReason === 'aborted') {
+        stream.push({ type: 'error', reason: message.stopReason, error: message })
+      } else {
+        stream.push({ type: 'done', reason: message.stopReason, message })
+      }
     }).catch((error) => {
       if (complete) return
       finish()
