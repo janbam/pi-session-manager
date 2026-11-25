@@ -106,3 +106,11 @@ Protocols: Tauri IPC | WebSocket (/ws) | HTTP (/api) | SSE
 - README path descriptions may be outdated
 - Frontend tests not integrated into CI
 - Dual CLI entry (`main.rs` vs `src-tauri-cli/`), current release uses src-tauri-cli
+
+## FORK
+
+- On Backloom, work in `~/src/pi-session-manager`. Push to `origin` (`janbam/pi-session-manager`). Use `upstream` (`Dwsy/pi-session-manager`) to fetch parent changes.
+- The `pi-session-cli.service` user unit runs `~/.local/bin/pi-session-cli`, a symlink to this checkout’s `target/release/pi-session-cli`. Keep the symlink in place when rebuilding. The original binary is available at `~/.local/bin/pi-session-cli.pre-editable` for rollback.
+- To update the running install from the checkout, run `pnpm run build && cargo build --release -p pi-session-cli && systemctl --user restart pi-session-cli.service`. Build the frontend first because the release CLI embeds `dist/`. Restart only after both builds succeed.
+- Verify the new process with `curl -fsS http://127.0.0.1:52131/health`. If a browser still shows the old UI, try a fresh private tab to bypass the PWA cache.
+- The persistent user-unit drop-in `20-local-environment.conf` adds `~/.local/bin` to the service PATH for Pi. Go credentials live in the service’s private `~/.config/pi-session-manager/service.env` file (mode `0600`). Keep the file outside the checkout and its values out of logs. Shell exports are separate from the user service environment.
