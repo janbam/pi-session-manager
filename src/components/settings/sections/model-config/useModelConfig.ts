@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { homeDir, join } from "@tauri-apps/api/path";
 import {
   open as openDialog,
@@ -7,6 +7,7 @@ import {
 import { useTranslation } from "react-i18next";
 import { invoke } from "@/transport";
 import { useClipboard } from "@/hooks/useClipboard";
+import type { ModelOption } from "@/types";
 import type {
   ModelConfigShape,
   ModelConfigBackupMeta,
@@ -83,6 +84,8 @@ export function useModelConfig() {
   const [copySourceProvider, setCopySourceProvider] = useState("");
   const [showCatalogModal, setShowCatalogModal] = useState(false);
   const [showRemoteModelsModal, setShowRemoteModelsModal] = useState(false);
+  const [piGoModels, setPiGoModels] = useState<string[] | null>(null);
+  const [loadingPiGoModels, setLoadingPiGoModels] = useState(false);
   const [newProviderName, setNewProviderName] = useState("");
 
   const [showImportModal, setShowImportModal] = useState(false);
@@ -112,6 +115,25 @@ export function useModelConfig() {
     ? config.providers[selectedProvider]
     : undefined;
   const selectedProviderModels = selectedProviderEntry?.models ?? [];
+  const showPiGoModels = selectedProvider === "opencode-go" && usesOpenCodeGoCatalog(selectedProvider, selectedProviderEntry?.baseUrl);
+  /** Refresh the installed models used by both Go model lists. */
+  const refreshPiGoModels = useCallback(async () => {
+    setLoadingPiGoModels(true);
+    try {
+      const available = await invoke<ModelOption[]>("list_model_options_full");
+      const ids = available.filter(({ provider }) => provider === "opencode-go").map(({ model }) => model);
+      setPiGoModels(ids.length ? ids : null);
+    } catch {
+      setPiGoModels(null);
+    } finally {
+      setLoadingPiGoModels(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (showPiGoModels) void refreshPiGoModels();
+  }, [refreshPiGoModels, showPiGoModels]);
+
   const selectedModelIndex = Number.parseInt(selectedModel, 10);
   const selectedModelEntry = Number.isInteger(selectedModelIndex)
     ? selectedProviderModels[selectedModelIndex]
@@ -648,15 +670,11 @@ export function useModelConfig() {
           .filter(Boolean),
       );
 
-      // A custom entry with a built-in Pi ID would replace its protocol compatibility settings.
+      // The dialog excludes Go models already supplied by Pi to preserve their compatibility settings.
       const goCatalog = selected.every((item) => item.modelConfig !== undefined);
-      if (goCatalog && selectedProvider === "opencode-go") {
-        const piModels = await invoke<Array<{ provider: string; model: string }>>("list_model_options_full");
-        const goModels = piModels.filter(({ provider }) => provider === "opencode-go");
-        if (goModels.length === 0) {
-          throw new Error(t("settings.modelConfigCenter.feedback.openCodeGoNeedsPi", "Connect OpenCode Go in Pi before importing models so PSM can identify Pi's built-in models."));
-        }
-        for (const { model } of goModels) existingIds.add(model.toLowerCase());
+      if (goCatalog && showPiGoModels) {
+        if (!piGoModels) return;
+        for (const id of piGoModels) existingIds.add(id.toLowerCase());
       }
 
       // Go includes metadata in the list itself. Keep the existing enrichment for generic providers.
@@ -1573,6 +1591,9 @@ export function useModelConfig() {
     setShowCatalogModal,
     showRemoteModelsModal,
     setShowRemoteModelsModal,
+    piGoModels,
+    loadingPiGoModels: showPiGoModels && loadingPiGoModels,
+    refreshPiGoModels,
     newProviderName,
     setNewProviderName,
     showImportModal,
